@@ -243,18 +243,31 @@ const executeWorkflow = async (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
 
-    // Verify workflow belongs to user
+    // Verify workflow exists
     const { data: workflow, error: wfError } = await supabase
       .from('workflows')
       .select('*, workflow_steps(*)')
       .eq('id', id)
-      .eq('user_id', userId)
       .single();
 
     if (wfError || !workflow) {
       return res.status(404).json({
         success: false,
-        message: 'Workflow not found or access denied.'
+        message: 'Workflow not found.'
+      });
+    }
+
+    // RBAC: Only Creator, Admin, or users in matching departments can execute
+    const requiredRoles = [...new Set((workflow.workflow_steps || []).map(s => s.department))];
+    const userRole = req.user.role || 'Employee';
+    const isCreator = workflow.user_id === userId;
+    const isAdmin = userRole === 'Admin' || userRole === 'Admin/HR';
+    const hasRequiredRole = requiredRoles.includes(userRole);
+
+    if (!isCreator && !isAdmin && !hasRequiredRole) {
+      return res.status(403).json({
+        success: false,
+        message: `Access denied. You need one of these roles to execute this workflow: Admin, ${requiredRoles.join(', ')}`
       });
     }
 
@@ -307,8 +320,25 @@ const executeWorkflow = async (req, res) => {
         }
       });
 
-      // Support Bulk Email Sending
-      const recipients = ['premadityakadiyala@gmail.com', 'testrecipient@niat.com']; 
+      // Support Bulk Email Sending - Dynamic based on roles
+      const requiredRoles = [...new Set((workflow.workflow_steps || []).map(s => s.department))];
+      let recipients = [];
+      
+      if (requiredRoles.length > 0) {
+        const { data: users, error: userError } = await supabase
+          .from('users')
+          .select('email')
+          .in('role', requiredRoles);
+          
+        if (!userError && users) {
+          recipients = users.map(u => u.email);
+        }
+      }
+
+      // Fallback if no matching users found
+      if (recipients.length === 0) {
+        recipients = [req.user.email]; // Email the executor
+      }
 
       const stepDetails = (workflow.workflow_steps || []).map(s => `- ${s.title} (${s.department})`).join('\n');
       const mailOptions = {
@@ -319,8 +349,8 @@ const executeWorkflow = async (req, res) => {
       };
 
       await transporter.sendMail(mailOptions);
-      console.log('✅ Success! Email sent to premadityakadiyala@gmail.com');
-      log.message = `Workflow executed. Email notification sent to premadityakadiyala!`;
+      console.log(`✅ Success! Email sent to ${recipients.length} recipients`);
+      log.message = `Workflow executed. Email notification sent to relevant departments (${requiredRoles.join(', ')}).`;
 
       await supabase.from('execution_logs').update({ message: log.message }).eq('id', log.id);
 

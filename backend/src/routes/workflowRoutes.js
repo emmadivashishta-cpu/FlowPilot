@@ -10,11 +10,19 @@ const {
   deleteWorkflow
 } = require('../controllers/workflowController');
 
+const rateLimit = require('express-rate-limit');
+
 // All workflow routes require JWT authentication
 router.use(verifyToken);
 
+const aiLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10, // 10 AI generations per hour per user
+  message: { success: false, message: 'AI Generation limit reached. Please try again later.' }
+});
+
 // POST /api/workflows/generate - AI Generation Route
-router.post('/generate', generateWorkflow);
+router.post('/generate', aiLimiter, generateWorkflow);
 
 // POST /api/workflows - Save created workflow
 router.post('/', createWorkflow);
